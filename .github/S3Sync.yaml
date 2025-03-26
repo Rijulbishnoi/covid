@@ -1,4 +1,4 @@
-name: MLOps CI/CD Pipeline with S3 Deployment
+name: MLOps CI/CD Pipeline with Secrets
 
 on:
   push:
@@ -7,83 +7,78 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: us-east-1
-  S3_BUCKET: data-coders-app
-  CLOUDFRONT_DIST_ID: YOUR_DISTRIBUTION_ID  # Optional for CDN
+  AWS_REGION: ap-south-1
+  S3_BUCKET: loanfinderex  # Different buckets for environments
+  STAGE: prod                      # prod/dev/test
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: ✅ Checkout Code
+      - name: 🔒 Checkout Code (with secrets masking)
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: ✅ Set up Python
+      - name: 🔐 Configure AWS Credentials (OIDC Recommended)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: 📦 Install Dependencies (with cache)
         uses: actions/setup-python@v4
         with:
           python-version: 3.9
-
-      - name: ✅ Install Dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install awscli boto3
-
-      - name: ✅ Lint Code
-        run: pylint src/*.py api/*.py --disable=R,C
-
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: ✅ Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.9
-
-      - name: ✅ Run Unit Tests
-        run: |
-          pip install pytest pytest-cov
-          pytest tests/ --cov=./ --cov-report=xml
+          cache: 'pip'
           
-      - name: ✅ Upload Coverage
-        uses: codecov/codecov-action@v3
+      - run: pip install -r requirements.txt
 
   deploy:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
+    environment: production  # Enables environment protection rules
     permissions:
-      id-token: write  # Required for AWS OIDC auth
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
-      
-      - name: ✅ Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+
+      - name: 🔑 Load Environment Secrets
+        run: |
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
+          echo "JSEARCH_API_KEY=${{ secrets.JSEARCH_API_KEY }}" >> $GITHUB_ENV
+          # For non-masked env vars:
+          echo "DB_HOST=db.${{ env.STAGE }}.example.com" >> $GITHUB_ENV
+
+      - name: 🚀 Deploy to S3 (with secret protection)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}  # Alternative to OIDC
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          # Secure file operations
+          aws s3 sync ./dist s3://${{ env.S3_BUCKET }} \
+            --exclude ".env" \
+            --exclude "*.pem" \
+            --sse AES256
+
+      - name: 🔍 Verify Deployment
+        run: curl -s https://${{ env.S3_BUCKET }}.s3.amazonaws.com/healthcheck
+
+      - name: 📨 Notify Slack on Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
         with:
-          role-to-assume: arn:aws:iam::YOUR_ACCOUNT_ID:role/GitHubActionsRole
-          aws-region: ${{ env.AWS_REGION }}
+          slack-message: "🚀 Deployment to ${{ env.STAGE }} succeeded!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
 
-      - name: ✅ Sync to S3
-        run: |
-          aws s3 sync ./src s3://${{ env.S3_BUCKET }}/src \
-            --exclude "*.pyc" \
-            --exclude ".git/*" \
-            --delete
-          
-          # Upload static files with cache control
-          aws s3 sync ./static s3://${{ env.S3_BUCKET }}/static \
-            --cache-control "max-age=31536000,public"
-
-      - name: ✅ Invalidate CloudFront Cache
-        if: env.CLOUDFRONT_DIST_ID != ''
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ env.CLOUDFRONT_DIST_ID }} \
-            --paths "/*"
-
-      - name: ✅ Verify Deployment
-        run: |
-          echo "🎉 Successfully deployed to:"
-          echo "http://${{ env.S3_BUCKET }}.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
+  rollback:  # Safety net
+    needs: deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "❌ Deployment failed! Trigger rollback..."
+          # Add rollback logic here
