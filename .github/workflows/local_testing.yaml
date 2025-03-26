@@ -3,7 +3,7 @@ name: MLOps CI/CD
 on:
   push:
     branches:
-      - master
+      - main
 
 jobs:
   build:
