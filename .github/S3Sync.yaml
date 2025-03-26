@@ -1,84 +1,27 @@
-name: MLOps CI/CD Pipeline with Secrets
+name: Deploy to AWS S3
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
-
-env:
-  AWS_REGION: ap-south-1
-  S3_BUCKET: loanfinderex  # Different buckets for environments
-  STAGE: prod                      # prod/dev/test
+    branches:
+      - main  # Runs only when pushing to the main branch
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🔒 Checkout Code (with secrets masking)
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: 🔐 Configure AWS Credentials (OIDC Recommended)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-          mask-aws-account-id: true
-
-      - name: 📦 Install Dependencies (with cache)
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.9
-          cache: 'pip'
-          
-      - run: pip install -r requirements.txt
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    environment: production  # Enables environment protection rules
-    permissions:
-      id-token: write
-      contents: read
+
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-      - name: 🔑 Load Environment Secrets
-        run: |
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
-          echo "JSEARCH_API_KEY=${{ secrets.JSEARCH_API_KEY }}" >> $GITHUB_ENV
-          # For non-masked env vars:
-          echo "DB_HOST=db.${{ env.STAGE }}.example.com" >> $GITHUB_ENV
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: 🚀 Deploy to S3 (with secret protection)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}  # Alternative to OIDC
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          # Secure file operations
-          aws s3 sync ./dist s3://${{ env.S3_BUCKET }} \
-            --exclude ".env" \
-            --exclude "*.pem" \
-            --sse AES256
+    - name: Upload Files to S3
+      run: aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }} --delete
 
-      - name: 🔍 Verify Deployment
-        run: curl -s https://${{ env.S3_BUCKET }}.s3.amazonaws.com/healthcheck
-
-      - name: 📨 Notify Slack on Success
-        if: success()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          slack-message: "🚀 Deployment to ${{ env.STAGE }} succeeded!"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-
-  rollback:  # Safety net
-    needs: deploy
-    if: failure()
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "❌ Deployment failed! Trigger rollback..."
-          # Add rollback logic here
+    - name: Print Success Message
+      run: echo "Deployment to S3 completed successfully!"
