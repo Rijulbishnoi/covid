@@ -1,0 +1,89 @@
+name: MLOps CI/CD Pipeline with S3 Deployment
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: data-coders-app
+  CLOUDFRONT_DIST_ID: YOUR_DISTRIBUTION_ID  # Optional for CDN
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ✅ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ✅ Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+
+      - name: ✅ Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install awscli boto3
+
+      - name: ✅ Lint Code
+        run: pylint src/*.py api/*.py --disable=R,C
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: ✅ Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.9
+
+      - name: ✅ Run Unit Tests
+        run: |
+          pip install pytest pytest-cov
+          pytest tests/ --cov=./ --cov-report=xml
+          
+      - name: ✅ Upload Coverage
+        uses: codecov/codecov-action@v3
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for AWS OIDC auth
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: ✅ Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::YOUR_ACCOUNT_ID:role/GitHubActionsRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ✅ Sync to S3
+        run: |
+          aws s3 sync ./src s3://${{ env.S3_BUCKET }}/src \
+            --exclude "*.pyc" \
+            --exclude ".git/*" \
+            --delete
+          
+          # Upload static files with cache control
+          aws s3 sync ./static s3://${{ env.S3_BUCKET }}/static \
+            --cache-control "max-age=31536000,public"
+
+      - name: ✅ Invalidate CloudFront Cache
+        if: env.CLOUDFRONT_DIST_ID != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_DIST_ID }} \
+            --paths "/*"
+
+      - name: ✅ Verify Deployment
+        run: |
+          echo "🎉 Successfully deployed to:"
+          echo "http://${{ env.S3_BUCKET }}.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
