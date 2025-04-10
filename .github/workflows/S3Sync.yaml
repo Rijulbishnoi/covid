@@ -21,4 +21,4 @@ jobs:
 
       - name: Upload files to S3
         run: |
-          aws s3 sync api/model.pkl s3://bucketfind123
+          aws s3 sync . s3://bucketfind123
