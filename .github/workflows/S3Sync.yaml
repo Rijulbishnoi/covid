@@ -21,4 +21,4 @@ jobs:
 
       - name: Upload files to S3
         run: |
-          aws s3 sync [api/model.pkl,data/covid_toy.csv] s3://loanfinderex
+          aws s3 sync [api/model.pkl,data/covid_toy.csv] s3://bucketfind123
